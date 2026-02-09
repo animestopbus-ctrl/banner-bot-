@@ -1,15 +1,24 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command  # ✅ FIXED: CommandStart → Command("start")
+from aiogram.filters import Command
 from loguru import logger
 from pathlib import Path
-from database.mongo import db  # ✅ Added for user tracking
+import asyncio
+from database.mongo import db
 
 router = Router()
 
+# ✅ PROPER ESCAPING FUNCTION
+def escape_markdown_v2(text: str) -> str:
+    """Escape ALL MarkdownV2 special characters"""
+    chars_to_escape = r'_*[]()~`>#+-=|{}.!'
+    for char in chars_to_escape:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 @router.message(Command("start"))
 async def LastPerson07_start(message: Message):
-    """✅ WORKING Start handler"""
+    """✅ FIXED Start handler - NO ESCAPING ERRORS"""
     try:
         user_id = message.from_user.id
         
@@ -20,27 +29,18 @@ async def LastPerson07_start(message: Message):
             message.from_user.first_name or "User"
         )
         
-        # Try to load logo
-        logo = ""
+        # Logo (plain text - NO Markdown)
         logo_path = Path("assets/logo.txt")
         if logo_path.exists():
             try:
-                logo = logo_path.read_text(encoding="utf-8")
+                logo = logo_path.read_text(encoding="utf-8").strip()
+                if logo:
+                    await message.answer(logo)
+                    await asyncio.sleep(1)
             except:
                 pass
         
-        # Send logo first (if exists)
-        if logo.strip():
-            try:
-                await message.answer(
-                    f"```\n{logo}\n```", 
-                    parse_mode="MarkdownV2"  # ✅ FIXED MarkdownV2
-                )
-                await asyncio.sleep(1)  # Small delay for better UX
-            except:
-                pass
-        
-        # Main welcome message
+        # ✅ MAIN MENU - PROPERLY ESCAPED
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎨 CREATE BANNER", callback_data="create")],
             [InlineKeyboardButton(text="📱 TEMPLATES", callback_data="templates")],
@@ -48,55 +48,55 @@ async def LastPerson07_start(message: Message):
             [InlineKeyboardButton(text="❓ HELP", callback_data="help")]
         ])
         
+        # ✅ NO SPECIAL CHARS - HTML FORMAT
         caption = """
-🚀 *LastPerson07x-BannerBot v3.1*
+🚀 <b>LastPerson07x-BannerBot v3.1</b>
 
-*✨ Professional Anime Banners*
+✨ Professional Anime Banners
 
 ✅ Free unlimited usage
-✅ Real anime wallpapers
-✅ Pro templates included  
-✅ HD quality \\(1080x1920\\)
+✅ Real anime wallpapers  
+✅ Pro templates included
+✅ HD quality (1080x1920)
 ✅ Custom text effects
 
-*Click CREATE BANNER to start!*
+<b>Click CREATE BANNER to start!</b>
         """.strip()
         
-        await message.answer(caption, parse_mode="MarkdownV2", reply_markup=keyboard)
+        await message.answer(caption, parse_mode="HTML", reply_markup=keyboard)
         logger.info(f"✅ User {user_id} started bot")
         
     except Exception as e:
         logger.error(f"❌ Start error: {e}")
-        # Fallback message
+        # ✅ FALLBACK - Plain text
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎨 CREATE BANNER", callback_data="create")]
         ])
         await message.answer(
-            "🚀 *BannerBot Started!*\n\nClick CREATE BANNER to make anime banners!", 
-            parse_mode="MarkdownV2", 
+            "🚀 BannerBot Started!\n\nClick CREATE BANNER to make anime banners!",
             reply_markup=kb
         )
 
 @router.callback_query(F.data == "help")
 async def LastPerson07_help(callback: CallbackQuery):
-    """Help handler"""
+    """✅ FIXED Help - HTML format"""
     try:
         await callback.answer("📖")
         
         text = """
-📖 *LastPerson07x-BannerBot Help*
+📖 <b>LastPerson07x-BannerBot Help</b>
 
-🎨 *CREATE* \\- Make custom banners
-📱 *TEMPLATES* \\- Pro samples
-📊 *STATS* \\- Bot statistics
+🎨 <b>CREATE</b> - Make custom banners
+📱 <b>TEMPLATES</b> - Pro samples  
+📊 <b>STATS</b> - Bot statistics
 
-*Features:*
+<b>Features:</b>
 • Real anime wallpapers
 • Professional text effects
-• HD export \\(1080x1920\\)
+• HD export (1080x1920)
 • Instant generation
 
-*Admin:* /admin, /ban\\_user, /unban\\_user
+<b>Admin:</b> /admin, /ban_user, /unban_user
 
 Made by @LastPerson07
         """.strip()
@@ -105,15 +105,15 @@ Made by @LastPerson07
             [InlineKeyboardButton(text="🏠 BACK", callback_data="home")]
         ])
         
-        await callback.message.edit_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
         
     except Exception as e:
         logger.error(f"❌ Help error: {e}")
-        await callback.answer("❌ Error loading help", show_alert=True)
+        await callback.answer("❌ Error", show_alert=True)
 
 @router.callback_query(F.data == "home")
 async def LastPerson07_home(callback: CallbackQuery):
-    """Home handler"""
+    """✅ FIXED Home"""
     try:
         await callback.answer("🏠")
         
@@ -124,20 +124,20 @@ async def LastPerson07_home(callback: CallbackQuery):
             [InlineKeyboardButton(text="❓ HELP", callback_data="help")]
         ])
         
-        caption = """
-🚀 *LastPerson07x-BannerBot v3.1*
+        text = """
+🚀 <b>LastPerson07x-BannerBot v3.1</b>
 
-*✨ Professional Anime Banners*
+✨ Professional Anime Banners
 
 ✅ HD Quality
-✅ Anime Wallpapers
+✅ Anime Wallpapers  
 ✅ Pro Templates
 ✅ Custom Text
 
-*Click CREATE BANNER!*
+<b>Click CREATE BANNER!</b>
         """.strip()
         
-        await callback.message.edit_text(caption, parse_mode="MarkdownV2", reply_markup=keyboard)
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
         
     except Exception as e:
         logger.error(f"❌ Home error: {e}")
@@ -145,7 +145,7 @@ async def LastPerson07_home(callback: CallbackQuery):
 
 @router.callback_query(F.data == "templates")
 async def LastPerson07_templates(callback: CallbackQuery):
-    """Templates handler"""
+    """✅ FIXED Templates"""
     try:
         await callback.answer("📱")
         
@@ -159,45 +159,45 @@ async def LastPerson07_templates(callback: CallbackQuery):
         ])
         
         text = """
-📱 *SELECT TEMPLATE*
+📱 <b>SELECT TEMPLATE</b>
 
 Choose your favorite style:
         """.strip()
         
-        await callback.message.edit_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
         
     except Exception as e:
         logger.error(f"❌ Templates error: {e}")
-        await callback.answer("❌ Error loading templates", show_alert=True)
+        await callback.answer("❌ Error", show_alert=True)
 
 @router.callback_query(F.data == "stats")
 async def LastPerson07_stats(callback: CallbackQuery):
-    """Stats handler"""
+    """✅ FIXED Stats"""
     try:
         await callback.answer("📊")
         
-        # Safe stats fetch
+        # Safe stats
         try:
             stats = await db.LastPerson07_get_stats()
         except:
             stats = {"total_users": 0, "total_banners": 0, "active_24h": 0}
         
         text = f"""
-📊 *Bot Statistics*
+📊 <b>Bot Statistics</b>
 
-👥 Users: `{stats['total_users']}`
-🖼️ Banners: `{stats['total_banners']:,}`
-🔥 Active 24h: `{stats['active_24h']}`
+👥 Users: <code>{stats['total_users']}</code>
+🖼️ Banners: <code>{stats['total_banners']:,}</code>
+🔥 Active 24h: <code>{stats['active_24h']}</code>
 
-*Powered by @LastPerson07*
+<b>Powered by @LastPerson07</b>
         """.strip()
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 BACK", callback_data="home")]
         ])
         
-        await callback.message.edit_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
         
     except Exception as e:
         logger.error(f"❌ Stats error: {e}")
-        await callback.answer("❌ Error loading stats", show_alert=True)
+        await callback.answer("❌ Error", show_alert=True)
