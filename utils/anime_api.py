@@ -1,34 +1,56 @@
 import aiohttp
-import io
+import random
 from loguru import logger
 from PIL import Image
+import io
 
-async def LastPerson07_get_wallpaper() -> bytes:
-    """Fetch anime wallpaper from public APIs"""
-    try:
-        urls = [
-            "https://picsum.photos/1080/1920.jpg?random=1",
-            "https://picsum.photos/seed/anime/1080/1920",
-        ]
-        
+class AnimeWallpaperAPI:
+    """Real anime wallpaper API"""
+    
+    BASE_URLS = [
+        "https://api.waifu.im/search",
+        "https://api.waifu.pics/sfw/waifu",
+        "https://api.waifu.pics/sfw/neko"
+    ]
+    
+    async def get_anime_wallpaper(self) -> bytes:
+        """Fetch real anime wallpaper"""
         async with aiohttp.ClientSession() as session:
-            for url in urls:
-                try:
-                    async with session.get(
-                        url,
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.read()
-                            logger.info(f"✅ Wallpaper fetched from {url}")
-                            return data
-                except Exception as e:
-                    logger.debug(f"URL failed {url}: {e}")
-                    continue
+            # Try waifu.im first (best quality)
+            try:
+                params = {
+                    "included_tags": "anime,vertical",
+                    "excluded_tags": "rating:explicit",
+                    "height_from": "1500",
+                    "width_from": "800",
+                    "limit": 1
+                }
+                async with session.get(self.BASE_URLS[0], params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('images'):
+                            img_url = data['images'][0]['url']
+                            async with session.get(img_url) as img_resp:
+                                if img_resp.status == 200:
+                                    logger.info("✅ Anime wallpaper from waifu.im")
+                                    return await img_resp.read()
+            except:
+                pass
+            
+            # Fallback to waifu.pics
+            try:
+                url = random.choice(self.BASE_URLS[1:])
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        img_url = data['url']
+                        async with session.get(img_url) as img_resp:
+                            logger.info("✅ Anime wallpaper from waifu.pics")
+                            return await img_resp.read()
+            except:
+                pass
         
-        logger.warning("No wallpaper sources available")
+        logger.warning("❌ No anime wallpaper available")
         return None
-        
-    except Exception as e:
-        logger.error(f"Wallpaper fetch error: {e}")
-        return None
+
+anime_api = AnimeWallpaperAPI()
