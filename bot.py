@@ -1,9 +1,11 @@
 # bot.py
+
 import asyncio
 import sys
 from typing import Optional
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 from loguru import logger
@@ -11,154 +13,193 @@ from loguru import logger
 from config import config
 from database.mongo import db
 from middlewares.auth import LastPerson07_AuthMiddleware
-from handlers import start, banner, admin  # routers
+from handlers import start, banner, admin
 
-# Setup loguru
+
+# =====================================================
+# LOGGING
+# =====================================================
+
 logger.remove()
+
 logger.add(
     str(config.LOGS_DIR / "bot.log"),
-    rotation="1 MB",
-    retention="7 days",
+    rotation="5 MB",
+    retention="10 days",
+    compression="zip",
     level="INFO"
 )
+
 logger.add(sys.stdout, level="INFO")
 
-# Globals that will be created at startup
+
+# =====================================================
+# GLOBALS
+# =====================================================
+
 bot: Optional[Bot] = None
 dp: Optional[Dispatcher] = None
-
-# internal flag to ensure routers/middlewares registered once
 _registered = False
 
 
-async def LastPerson07_setup_commands(bot_obj: Bot):
-    """Idempotent: set bot commands"""
+# =====================================================
+# COMMANDS
+# =====================================================
+
+async def setup_commands(bot_obj: Bot):
+
     commands = [
         BotCommand(command="start", description="🚀 Start BannerBot"),
         BotCommand(command="create", description="🎨 Create banner"),
-        BotCommand(command="stats", description="📊 Stats"),
+        BotCommand(command="stats", description="📊 Statistics"),
         BotCommand(command="help", description="❓ Help"),
     ]
-    try:
-        await bot_obj.set_my_commands(commands)
-        logger.info("✅ Commands registered")
-    except Exception as e:
-        logger.exception(f"Failed to set commands: {e}")
+
+    await bot_obj.set_my_commands(commands)
+
+    logger.info("✅ Bot commands registered")
 
 
-async def _register_handlers_and_middlewares(dispatcher: Dispatcher):
-    """Register routers & middlewares only once"""
+# =====================================================
+# ROUTERS + MIDDLEWARE
+# =====================================================
+
+async def register_handlers(dispatcher: Dispatcher):
+
     global _registered
+
     if _registered:
         return
 
-    # register routers
     dispatcher.include_router(start.router)
     dispatcher.include_router(banner.router)
     dispatcher.include_router(admin.router)
 
-    # register middlewares (message & callback)
-    auth_mw = LastPerson07_AuthMiddleware()
-    dispatcher.message.middleware(auth_mw)
-    dispatcher.callback_query.middleware(auth_mw)
+    auth = LastPerson07_AuthMiddleware()
+
+    dispatcher.message.middleware(auth)
+    dispatcher.callback_query.middleware(auth)
 
     _registered = True
-    logger.info("✅ Routers and middlewares registered")
+
+    logger.info("✅ Routers & middlewares registered")
 
 
-async def LastPerson07_on_startup():
-    """Startup routine: connect DB, create bot/dispatcher, register handlers."""
+# =====================================================
+# STARTUP
+# =====================================================
+
+async def startup():
+
     global bot, dp
 
-    # validate config early
     config.validate()
 
-    # Ensure DB connected and indexes ready
-    await db.connect()             # uses new db.connect()
-    await db.init_indexes()        # idempotent
+    # Mongo connection
+    await db.connect()
 
-    # Create Bot & Dispatcher instances if not created
+    # Create bot once
     if bot is None:
-        bot = Bot(token=config.BOT_TOKEN, parse_mode="HTML")
+
+        bot_props = DefaultBotProperties(
+            parse_mode="HTML"
+        )
+
+        bot = Bot(
+            token=config.BOT_TOKEN,
+            default=bot_props
+        )
+
         logger.info("✅ Bot instance created")
 
+    # Dispatcher once
     if dp is None:
-        dp = Dispatcher(storage=MemoryStorage())
-        logger.info("✅ Dispatcher instance created")
 
-    # Register handlers and middlewares once
-    await _register_handlers_and_middlewares(dp)
+        dp = Dispatcher(
+            storage=MemoryStorage()
+        )
 
-    # Register commands (idempotent)
-    await LastPerson07_setup_commands(bot)
+        logger.info("✅ Dispatcher created")
 
-    logger.info("✅ Bot fully initialized")
+    await register_handlers(dp)
+
+    await setup_commands(bot)
+
+    logger.info("✅ Bot startup complete")
 
 
-async def LastPerson07_shutdown():
-    """Gracefully shutdown bot and dispatcher"""
+# =====================================================
+# SHUTDOWN
+# =====================================================
+
+async def shutdown():
+
     global bot, dp
 
     logger.info("🛑 Shutting down bot...")
 
     try:
-        if dp is not None:
-            # aiogram v3: dispatcher.shutdown handles cleanup
+        if dp:
             await dp.shutdown()
-            logger.info("✅ Dispatcher shutdown")
+            logger.info("✅ Dispatcher stopped")
+
     except Exception as e:
-        logger.exception(f"Error shutting down dispatcher: {e}")
+        logger.exception(f"Dispatcher shutdown error: {e}")
 
     try:
-        if bot is not None:
-            await bot.session.close()  # close underlying aiohttp session
-            # also call close() for completeness
-            try:
-                await bot.close()
-            except Exception:
-                pass
-            logger.info("✅ Bot closed")
-    except Exception as e:
-        logger.exception(f"Error closing bot: {e}")
+        if bot:
+            await bot.session.close()
+            logger.info("✅ Bot session closed")
 
+    except Exception as e:
+        logger.exception(f"Bot shutdown error: {e}")
+
+    await db.close()
+
+
+# =====================================================
+# MAIN LOOP
+# =====================================================
 
 async def LastPerson07_start_bot():
-    """
-    Main bot loop.
-    Uses an automatic restart loop with backoff on unexpected crashes,
-    but handles asyncio.CancelledError (task cancellation) gracefully.
-    """
-    global bot, dp
 
-    backoff = 1
-    max_backoff = 30
+    backoff = 2
+    max_backoff = 60
 
     while True:
+
         try:
-            await LastPerson07_on_startup()
 
-            if bot is None or dp is None:
-                raise RuntimeError("Bot or Dispatcher not initialized")
+            await startup()
 
-            logger.info("🚀 Starting polling (skip_updates=True)")
-            # start_polling will block until cancelled or finished
-            await dp.start_polling(bot, skip_updates=True)
+            if not bot or not dp:
+                raise RuntimeError("Bot failed to initialize")
 
-            # If start_polling returns normally, break the loop (clean exit)
-            logger.info("Polling stopped normally")
+            logger.info("🚀 Starting polling...")
+
+            await dp.start_polling(
+                bot,
+                skip_updates=True
+            )
+
+            # clean exit
             break
 
         except asyncio.CancelledError:
-            # Task was cancelled by outer lifecycle manager -> shutdown cleanly
-            logger.info("Bot task cancelled; performing clean shutdown")
-            await LastPerson07_shutdown()
+
+            logger.info("Bot task cancelled")
+
+            await shutdown()
             break
 
         except Exception as e:
-            # Unexpected error -> log, backoff, then restart
-            logger.exception(f"Bot crashed with error: {e}")
-            logger.info(f"Restarting in {backoff} seconds...")
-            await LastPerson07_shutdown()
+
+            logger.exception(f"🔥 Bot crashed: {e}")
+
+            await shutdown()
+
+            logger.info(f"Restarting in {backoff}s...")
+
             await asyncio.sleep(backoff)
-            backoff = min(max_backoff, backoff * 2)  # exponential backoff
-            continue
+
+            backoff = min(max_backoff, backoff * 2)
