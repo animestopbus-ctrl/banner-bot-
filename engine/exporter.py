@@ -1,33 +1,128 @@
 from PIL import Image
 from loguru import logger
+from pathlib import Path
+import tempfile
 import os
+import asyncio
+from typing import Optional
+
 
 class LastPerson07_Exporter:
-    """Image export & optimization"""
-    
+    """
+    Professional Image Exporter
+
+    ✔ Progressive JPEG
+    ✔ Optimized compression
+    ✔ Thread-safe saving
+    ✔ Automatic cleanup
+    ✔ Configurable directory
+    ✔ Predictable filenames
+    ✔ Non-blocking support
+    """
+
+    DEFAULT_PREFIX = "banner_"
+    KEEP_FILES = 200
+
+    # ---------------- EXPORT ---------------- #
+
     @staticmethod
-    def LastPerson07_export(
+    async def export_async(
         image: Image.Image,
-        output_path: str,
-        quality: int = 90
-    ):
-        """Export and optimize image"""
+        output_dir: Optional[str] = None,
+        quality: int = 88
+    ) -> str:
+        """
+        Async-safe export.
+        Runs Pillow inside threadpool.
+        """
+
+        return await asyncio.to_thread(
+            LastPerson07_Exporter._export_sync,
+            image,
+            output_dir,
+            quality
+        )
+
+    # ---------------- SYNC CORE ---------------- #
+
+    @staticmethod
+    def _export_sync(
+        image: Image.Image,
+        output_dir: Optional[str],
+        quality: int
+    ) -> str:
+
         try:
-            image.save(output_path, "JPEG", quality=quality, optimize=True)
-            logger.info(f"✅ Exported: {output_path}")
-            
+            # Choose directory
+            if output_dir:
+                out_dir = Path(output_dir)
+            else:
+                out_dir = Path("outputs")
+
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create temp file safely
+            fd, path = tempfile.mkstemp(
+                prefix=LastPerson07_Exporter.DEFAULT_PREFIX,
+                suffix=".jpg",
+                dir=str(out_dir)
+            )
+            os.close(fd)
+
+            output_path = Path(path)
+
+            # Convert to RGB if needed
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
+            # 🔥 SAVE WITH MAX OPTIMIZATION
+            image.save(
+                output_path,
+                "JPEG",
+                quality=quality,
+                optimize=True,
+                progressive=True,
+                subsampling=0  # highest quality chroma
+            )
+
+            logger.info(f"✅ Exported banner -> {output_path}")
+
             # Cleanup old files
-            try:
-                files = [f for f in os.listdir("/tmp") if f.startswith("tmpvvk")]
-                if len(files) > 100:
-                    files.sort(key=lambda x: os.path.getctime(f"/tmp/{x}"))
-                    for old_file in files[:-100]:
-                        try:
-                            os.remove(f"/tmp/{old_file}")
-                        except:
-                            pass
-            except:
-                pass
-            
+            LastPerson07_Exporter._cleanup(out_dir)
+
+            return str(output_path)
+
         except Exception as e:
-            logger.error(f"Export error: {e}")
+            logger.exception(f"Export failed: {e}")
+            raise
+
+    # ---------------- CLEANUP ---------------- #
+
+    @staticmethod
+    def _cleanup(directory: Path):
+        """
+        Keep only latest N banners.
+        Extremely important for Docker servers.
+        """
+
+        try:
+            files = list(directory.glob(f"{LastPerson07_Exporter.DEFAULT_PREFIX}*.jpg"))
+
+            if len(files) <= LastPerson07_Exporter.KEEP_FILES:
+                return
+
+            # sort by modification time
+            files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+            old_files = files[LastPerson07_Exporter.KEEP_FILES:]
+
+            for file in old_files:
+                try:
+                    file.unlink()
+                except Exception:
+                    pass
+
+            logger.info(f"🧹 Cleaned {len(old_files)} old banners")
+
+        except Exception as e:
+            logger.debug(f"Cleanup skipped: {e}")
