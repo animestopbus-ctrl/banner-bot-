@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+from loguru import logger  # ✅ ADDED MISSING IMPORT
 
 load_dotenv()
 
@@ -11,7 +12,7 @@ class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
     
     # Database
-    MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/bannerbot").strip()
+    MONGO_URI = os.getenv("MONGO_URI", "").strip()
     
     # Admin
     ADMIN_IDS = [
@@ -41,21 +42,13 @@ class Config:
     BANNER_QUALITY = 90
     MAX_TITLE_LENGTH = 60
     
-    # Rate limiting
-    RATE_LIMIT_BANNERS = 10  # per user per hour
-    RATE_LIMIT_REQUESTS = 30  # per user per minute
-    
-    # Timeouts
-    API_TIMEOUT = 10
-    DB_TIMEOUT = 5
-    
     def validate(self):
         """Validate configuration"""
         if not self.BOT_TOKEN or len(self.BOT_TOKEN) < 10:
             raise ValueError("❌ Invalid BOT_TOKEN!")
         if not self.MONGO_URI:
             raise ValueError("❌ MONGO_URI not set!")
-        logger.info("✅ Configuration validated")
+        logger.info("✅ Configuration validated")  # ✅ NOW WORKS
         return True
 
 config = Config()
