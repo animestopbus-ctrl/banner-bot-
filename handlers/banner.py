@@ -1,5 +1,12 @@
+# handlers/banner.py
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import StateFilter
@@ -7,164 +14,256 @@ from services.banner_service import LastPerson07_BannerService
 from database.mongo import db
 from loguru import logger
 import asyncio
+from typing import Optional
 
 router = Router()
 banner_service = LastPerson07_BannerService()
+
 
 class BannerState(StatesGroup):
     """FSM states for banner creation"""
     waiting_title = State()
 
+
+# --- helpers --- #
+async def safe_edit_or_send(target, text: str, reply_markup=None):
+    """
+    Try edit_text on a message-like object, otherwise send a new message.
+    `target` can be a Message or CallbackQuery.message
+    """
+    parse_mode = "HTML"
+    try:
+        # target might be a Message
+        if hasattr(target, "edit_text"):
+            await target.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            return
+    except Exception as e:
+        logger.debug(f"edit_text failed (will send new message): {e}")
+
+    try:
+        # If target has 'answer' use that (CallbackQuery or Message)
+        if hasattr(target, "answer"):
+            await target.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        else:
+            # fallback to sending using router's bot via message
+            # If we reach here, try to find a message to send from
+            if hasattr(target, "message") and target.message:
+                await target.message.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception as e:
+        logger.exception(f"Failed to send text fallback: {e}")
+
+
+# ---------------- create flow ---------------- #
 @router.callback_query(F.data == "create")
 async def LastPerson07_create_start(callback: CallbackQuery, state: FSMContext):
     """Start banner creation"""
     try:
         await callback.answer("🎨")
-        
-        text = """
-✍️ **Enter Banner Title**
 
-Examples:
-`Battle Through Heavens S5 E125`
-`Anime Night Live Stream`
-`Episode 124 - ENG SUB`
+        text = (
+            "✍️ <b>Enter Banner Title</b>\n\n"
+            "Examples:\n"
+            "`Battle Through Heavens S5 E125`\n"
+            "`Anime Night Live Stream`\n"
+            "`Episode 124 - ENG SUB`\n\n"
+            "(Maximum 60 characters)"
+        )
 
-(Maximum 60 characters)
-        """
-        
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔥 QUICK DEMO", callback_data="demo")],
             [InlineKeyboardButton(text="🏠 MENU", callback_data="home")]
         ])
-        
+
         await state.set_state(BannerState.waiting_title)
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-        
+        # prefer editing the callback message; fallback handled in helper
+        msg = callback.message or callback
+        await safe_edit_or_send(msg, text, reply_markup=keyboard)
+
     except Exception as e:
-        logger.error(f"Create start error: {e}")
-        await callback.answer("❌ Error", show_alert=True)
+        logger.exception(f"Create start error: {e}")
+        try:
+            await callback.answer("❌ Error", show_alert=True)
+        except Exception:
+            pass
+
 
 @router.message(StateFilter(BannerState.waiting_title))
 async def LastPerson07_process_title(message: Message, state: FSMContext):
     """Process banner title from user"""
+    status_msg = None
     try:
-        title = message.text.strip()[:60]
-        
+        raw = (message.text or "").strip()
+        title = raw[:60]
+
         if len(title) < 3:
-            await message.answer("❌ Title too short (minimum 3 characters)")
+            await message.answer("❌ Title too short (minimum 3 characters).")
             return
-        
-        # Show loading
-        status_msg = await message.answer("⚡ **Generating banner...**")
-        
+
+        # get template_id from FSM state if user selected a template earlier
+        data = await state.get_data()
+        template_id = data.get("template_id", "1")
+
+        # Show loading (keep a reference to delete later)
+        try:
+            status_msg = await message.answer("⚡ <b>Generating banner...</b>", parse_mode="HTML")
+        except Exception:
+            status_msg = None
+
+        # generate banner (service handles sync/async engine)
+        banner_path: Optional[str] = None
         try:
             banner_path = await banner_service.LastPerson07_create_banner(
                 title=title,
-                template_id="1"
+                template_id=str(template_id)
             )
-            
-            # Send result
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🎨 CREATE NEW", callback_data="create")],
-                [InlineKeyboardButton(text="🏠 HOME", callback_data="home")]
-            ])
-            
+        except Exception as e:
+            logger.exception(f"Banner creation failed: {e}")
+            await message.answer("❌ Generation failed. Please try again later.")
+            return
+
+        if not banner_path:
+            await message.answer("❌ Failed to generate banner.")
+            return
+
+        # send result with buttons
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎨 CREATE NEW", callback_data="create")],
+            [InlineKeyboardButton(text="🏠 HOME", callback_data="home")]
+        ])
+
+        try:
             await message.answer_photo(
                 photo=FSInputFile(banner_path),
-                caption=f"✨ **{title}**\n\n> Generated by LastPerson07\n\n⚡ Fast & Professional",
-                parse_mode="Markdown",
+                caption=f"✨ <b>{title}</b>\n\nGenerated by LastPerson07\n⚡ Fast & Professional",
+                parse_mode="HTML",
                 reply_markup=keyboard
             )
-            
-            # Increment counter
-            await db.LastPerson07_increment_banners(message.from_user.id)
-            await db.LastPerson07_log_action(
-                message.from_user.id,
-                "banner_created",
-                f"Title: {title}"
-            )
-            logger.info(f"✅ Banner created for user {message.from_user.id}: {title}")
-            
         except Exception as e:
-            logger.error(f"Banner generation error: {e}")
-            await message.answer("❌ Generation failed. Please try again!")
-        
-        finally:
-            try:
-                await status_msg.delete()
-            except:
-                pass
-        
-        await state.clear()
-        
+            logger.exception(f"Failed to send photo: {e}")
+            await message.answer("❌ Failed to send the generated banner. Try again.")
+            return
+
+        # Increment counters & log action (best-effort)
+        try:
+            await db.increment_banners(message.from_user.id)
+        except Exception as e:
+            logger.warning(f"Failed to increment banners: {e}")
+
+        try:
+            await db.log_action(message.from_user.id, "banner_created", f"Title: {title}")
+        except Exception as e:
+            logger.warning(f"Failed to log action: {e}")
+
+        logger.info(f"✅ Banner created for user {message.from_user.id}: {title}")
+
     except Exception as e:
-        logger.error(f"Process title error: {e}")
-        await message.answer("❌ Error processing title")
+        logger.exception(f"Process title error: {e}")
+        try:
+            await message.answer("❌ Error processing title")
+        except Exception:
+            pass
+
+    finally:
+        # cleanup status message
+        try:
+            if status_msg:
+                await status_msg.delete()
+        except Exception:
+            pass
         await state.clear()
 
+
+# ---------------- demo ---------------- #
 @router.callback_query(F.data == "demo")
 async def LastPerson07_demo(callback: CallbackQuery, state: FSMContext):
     """Generate demo banner"""
+    status_msg = None
     try:
         await callback.answer("⚡")
-        
-        status = await callback.message.edit_text("⚡ **Generating demo banner...**")
-        
+
+        # Prefer editing message to show progress; fallback handled in helper
+        msg = callback.message or callback
         try:
-            banner_path = await banner_service.LastPerson07_create_banner(
-                title="Battle Through The Heavens Season 5",
-                template_id="1"
-            )
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🎨 CREATE CUSTOM", callback_data="create")],
-                [InlineKeyboardButton(text="📱 MORE TEMPLATES", callback_data="templates")],
-                [InlineKeyboardButton(text="🏠 HOME", callback_data="home")]
-            ])
-            
-            await callback.message.delete()
+            status_msg = await (callback.message.edit_text("⚡ <b>Generating demo banner...</b>", parse_mode="HTML") if callback.message else callback.answer("⚡ Generating demo..."))
+        except Exception:
+            status_msg = None
+
+        # generate demo banner
+        banner_path = await banner_service.LastPerson07_create_banner(
+            title="Battle Through The Heavens Season 5",
+            template_id="1"
+        )
+
+        if not banner_path:
+            await safe_edit_or_send(msg, "❌ Demo generation failed. Try again!")
+            return
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎨 CREATE CUSTOM", callback_data="create")],
+            [InlineKeyboardButton(text="📱 MORE TEMPLATES", callback_data="templates")],
+            [InlineKeyboardButton(text="🏠 HOME", callback_data="home")]
+        ])
+
+        # delete the old message if present and then send result
+        try:
+            if callback.message:
+                await callback.message.delete()
+        except Exception:
+            pass
+
+        try:
             await callback.message.answer_photo(
                 photo=FSInputFile(banner_path),
-                caption="✨ **Demo Banner**\n\n> Professional HD quality\n\nMade by LastPerson07",
-                parse_mode="Markdown",
+                caption="✨ <b>Demo Banner</b>\n\nProfessional HD quality\n\nMade by LastPerson07",
+                parse_mode="HTML",
                 reply_markup=keyboard
             )
-            
-            logger.info(f"✅ Demo created for user {callback.from_user.id}")
-            
         except Exception as e:
-            logger.error(f"Demo error: {e}")
-            await callback.message.edit_text("❌ Demo generation failed. Try again!")
-        
-        await state.clear()
-        
-    except Exception as e:
-        logger.error(f"Demo callback error: {e}")
-        await callback.answer("❌ Error", show_alert=True)
+            logger.exception(f"Failed to send demo photo: {e}")
+            await safe_edit_or_send(msg, "❌ Demo generation failed. Try again!")
 
+        logger.info(f"✅ Demo created for user {callback.from_user.id}")
+
+    except Exception as e:
+        logger.exception(f"Demo callback error: {e}")
+        try:
+            await callback.answer("❌ Error", show_alert=True)
+        except Exception:
+            pass
+
+    finally:
+        try:
+            if status_msg:
+                await status_msg.delete()
+        except Exception:
+            pass
+        await state.clear()
+
+
+# ---------------- template select ---------------- #
 @router.callback_query(F.data.startswith("template:"))
 async def LastPerson07_select_template(callback: CallbackQuery, state: FSMContext):
     """Select specific template"""
     try:
-        template_id = callback.data.split(":")[1]
+        # callback.data may be like "template:1"
+        template_id = callback.data.split(":", 1)[1]
         await state.update_data(template_id=template_id)
         await state.set_state(BannerState.waiting_title)
-        
+
         await callback.answer("✍️")
-        
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔥 QUICK DEMO", callback_data="demo")],
             [InlineKeyboardButton(text="🏠 MENU", callback_data="home")]
         ])
-        
-        text = f"""
-✍️ **Enter Banner Title for Template {template_id}**
 
-(Maximum 60 characters)
-        """
-        
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-        
+        text = f"✍️ <b>Enter Banner Title for Template {template_id}</b>\n\n(Maximum 60 characters)"
+        msg = callback.message or callback
+        await safe_edit_or_send(msg, text, reply_markup=kb)
+
     except Exception as e:
-        logger.error(f"Template select error: {e}")
-        await callback.answer("❌ Error", show_alert=True)
+        logger.exception(f"Template select error: {e}")
+        try:
+            await callback.answer("❌ Error", show_alert=True)
+        except Exception:
+            pass
